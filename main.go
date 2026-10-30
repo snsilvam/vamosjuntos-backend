@@ -27,10 +27,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	catalog, err := parseCatalog(cfg.GuestsJSON)
-	if err != nil {
-		return err
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -49,6 +45,14 @@ func run() error {
 		}
 	}()
 
+	// The catalog is read again on every request; reading it here too makes a revision with an
+	// invalid catalog fail to start, so Cloud Run keeps serving the previous one.
+	guests := NewGuestStore(client, cfg.EventID)
+	catalog, err := guests.Catalog(ctx)
+	if err != nil {
+		return err
+	}
+
 	events := NewEventStore(client, cfg.EventID)
 	// The event may not exist yet (FR-004 answers that case per request), but if it exists the
 	// catalog must fit in its capacity.
@@ -61,7 +65,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           NewServer(catalog, events, NewAttendanceStore(client, cfg.EventID), NewAttemptStore(client), cfg.SessionKey).routes(),
+		Handler:           NewServer(guests, events, NewAttendanceStore(client, cfg.EventID), NewAttemptStore(client), cfg.SessionKey).routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

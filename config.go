@@ -10,7 +10,6 @@ const sessionKeyBytes = 32
 
 // Config holds the process configuration read from environment variables.
 type Config struct {
-	GuestsJSON string
 	SessionKey []byte
 	EventID    string
 	// ProjectID is optional: on Cloud Run it is detected from the metadata server.
@@ -24,7 +23,6 @@ type Config struct {
 // variable that failed but never include its value, because some of them are secrets.
 func loadConfig(getenv func(string) string) (Config, error) {
 	c := Config{
-		GuestsJSON: getenv("GUESTS_JSON"),
 		EventID:    getenv("EVENT_ID"),
 		ProjectID:  getenv("GOOGLE_CLOUD_PROJECT"),
 		DatabaseID: getenv("FIRESTORE_DATABASE"),
@@ -35,9 +33,6 @@ func loadConfig(getenv func(string) string) (Config, error) {
 	}
 	if c.DatabaseID == "" {
 		c.DatabaseID = "(default)"
-	}
-	if c.GuestsJSON == "" {
-		return Config{}, errors.New("falta la variable GUESTS_JSON")
 	}
 	if c.EventID == "" {
 		return Config{}, errors.New("falta la variable EVENT_ID")

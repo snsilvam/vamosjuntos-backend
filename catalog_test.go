@@ -7,64 +7,34 @@ import (
 	"testing"
 )
 
-func TestSlug(t *testing.T) {
-	tests := []struct {
-		name string
-		want string
-	}{
-		{"papá de lore", "papa-de-lore"},
-		{"Nicolás López", "nicolas-lopez"},
-		{"El Fercho", "el-fercho"},
-		{"Sebastián", "sebastian"},
-		{"  Mafe  ", "mafe"},
-		{"mamá de lore", "mama-de-lore"},
-	}
-	for _, tt := range tests {
-		if got := slug(tt.name); got != tt.want {
-			t.Errorf("slug(%q) = %q, want %q", tt.name, got, tt.want)
-		}
-	}
-}
-
-func catalogJSON(t *testing.T, rows [][]string) string {
-	t.Helper()
-	b, err := json.Marshal(rows)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
-func TestParseCatalogRejects(t *testing.T) {
-	tooMany := make([][]string, maxGuests+1)
+func TestNewCatalogRejects(t *testing.T) {
+	tooMany := make([]Guest, maxGuests+1)
 	for i := range tooMany {
-		tooMany[i] = []string{fmt.Sprintf("Invitado %d", i), fmt.Sprintf("codigo%03d", i)}
+		tooMany[i] = Guest{ID: fmt.Sprintf("id%d", i), Name: fmt.Sprintf("Invitado %d", i), code: fmt.Sprintf("codigo%03d", i)}
 	}
 
 	tests := []struct {
-		name string
-		raw  string
+		name   string
+		guests []Guest
 	}{
-		{"not json", "esto no es json"},
-		{"empty", "[]"},
-		{"26 guests", catalogJSON(t, tooMany)},
-		{"duplicate code ignoring case and spaces", catalogJSON(t, [][]string{{"Ana", "Abc123"}, {"Luis", " abc123 "}})},
-		{"short code", catalogJSON(t, [][]string{{"Ana", "abc12"}})},
-		{"empty name", catalogJSON(t, [][]string{{"  ", "abc123"}})},
-		{"row without code", catalogJSON(t, [][]string{{"Ana"}})},
-		{"duplicate id", catalogJSON(t, [][]string{{"María", "abc123"}, {"maria", "xyz789"}})},
+		{"empty", nil},
+		{"26 guests", tooMany},
+		{"duplicate code ignoring case and spaces", []Guest{{ID: "a", Name: "Ana", code: "Abc123"}, {ID: "l", Name: "Luis", code: " abc123 "}}},
+		{"short code", []Guest{{ID: "a", Name: "Ana", code: "abc12"}}},
+		{"code that is short once trimmed", []Guest{{ID: "a", Name: "Ana", code: "  abc1  "}}},
+		{"empty name", []Guest{{ID: "a", Name: "  ", code: "abc123"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := parseCatalog(tt.raw); err == nil {
+			if _, err := newCatalog(tt.guests); err == nil {
 				t.Fatal("expected an error")
 			}
 		})
 	}
 }
 
-func TestParseCatalogErrorsDoNotLeakCodes(t *testing.T) {
-	_, err := parseCatalog(catalogJSON(t, [][]string{{"Ana", "secreto1"}, {"Luis", "SECRETO1"}}))
+func TestNewCatalogErrorsDoNotLeakCodes(t *testing.T) {
+	_, err := newCatalog([]Guest{{ID: "a", Name: "Ana", code: "secreto1"}, {ID: "l", Name: "Luis", code: "SECRETO1"}})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -74,20 +44,20 @@ func TestParseCatalogErrorsDoNotLeakCodes(t *testing.T) {
 }
 
 func TestCatalogLookups(t *testing.T) {
-	c, err := parseCatalog(catalogJSON(t, [][]string{
-		{"Sebastián", "prueba04"},
-		{"Carmencita", "prueba01"},
-		{"papá de lore", "prueba03"},
-		{"Alisson", "prueba02"},
-	}))
+	c, err := newCatalog([]Guest{
+		{ID: "doc4", Name: "Sebastián", code: "prueba04"},
+		{ID: "doc1", Name: " Carmencita ", code: " prueba01 "},
+		{ID: "doc3", Name: "papá de lore", code: "prueba03"},
+		{ID: "doc2", Name: "Alisson", code: "prueba02"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !c.Matches("carmencita", " PRUEBA01 ") {
+	if !c.Matches("doc1", " PRUEBA01 ") {
 		t.Error("Matches should ignore spaces and case")
 	}
-	if c.Matches("carmencita", "prueba02") {
+	if c.Matches("doc1", "prueba02") {
 		t.Error("Matches accepted another guest's code")
 	}
 	if c.Matches("nadie", "prueba01") {
@@ -95,8 +65,8 @@ func TestCatalogLookups(t *testing.T) {
 	}
 
 	g, ok := c.ByCode("Prueba03")
-	if !ok || g.ID != "papa-de-lore" {
-		t.Errorf("ByCode = %+v, %v; want papa-de-lore", g, ok)
+	if !ok || g.ID != "doc3" {
+		t.Errorf("ByCode = %+v, %v; want doc3", g, ok)
 	}
 	if _, ok := c.ByCode("noexiste"); ok {
 		t.Error("ByCode found an unknown code")

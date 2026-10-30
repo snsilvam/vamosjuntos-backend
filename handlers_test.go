@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,13 @@ import (
 
 // Fakes of the interfaces consumed by the handlers. They reuse the pure rules so the tests
 // exercise the same transitions and limits as production.
+
+type fakeGuests struct {
+	catalog Catalog
+	err     error
+}
+
+func (f *fakeGuests) Catalog(context.Context) (Catalog, error) { return f.catalog, f.err }
 
 type fakeEvents struct {
 	event Event
@@ -65,6 +73,7 @@ const testDevice = "11111111-2222-3333-4444-555555555555"
 type testEnv struct {
 	srv        *server
 	handler    http.Handler
+	guests     *fakeGuests
 	events     *fakeEvents
 	attendance *fakeAttendance
 	attempts   *fakeAttempts
@@ -73,12 +82,17 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	catalog, err := parseCatalog(`[["Carmencita","prueba01"],["Liam","prueba02"],["papá de lore","prueba03"]]`)
+	catalog, err := newCatalog([]Guest{
+		{ID: "carmencita", Name: "Carmencita", code: "prueba01"},
+		{ID: "liam", Name: "Liam", code: "prueba02"},
+		{ID: "papa-de-lore", Name: "papá de lore", code: "prueba03"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, colombia)
 	env := &testEnv{
+		guests: &fakeGuests{catalog: catalog},
 		events: &fakeEvents{event: Event{
 			Name:            "Paseo Familiar Diciembre 2026",
 			StartsAt:        time.Date(2026, 12, 23, 14, 0, 0, 0, colombia),
@@ -91,7 +105,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		attempts:   &fakeAttempts{states: map[string]attemptState{}, now: now},
 		now:        now,
 	}
-	env.srv = NewServer(catalog, env.events, env.attendance, env.attempts, bytes.Repeat([]byte{1}, sessionKeyBytes))
+	env.srv = NewServer(env.guests, env.events, env.attendance, env.attempts, bytes.Repeat([]byte{1}, sessionKeyBytes))
 	env.srv.now = func() time.Time { return env.now }
 	env.handler = env.srv.routes()
 	return env
@@ -193,6 +207,53 @@ func TestGuestsWithoutEvent(t *testing.T) {
 	env.events.err = errEventNotFound
 	w := env.do(t, request{method: "GET", path: "/api/onboarding/guests"})
 	assertError(t, w, http.StatusNotFound, codeEventNotFound)
+}
+
+// The catalog is read on every request, so the organizer's edits in Firestore apply without a
+// restart (FR-001).
+func TestCatalogChangesApplyRightAway(t *testing.T) {
+	env := newTestEnv(t)
+	catalog, err := newCatalog([]Guest{
+		{ID: "carmencita", Name: "Carmencita", code: "prueba01"},
+		{ID: "nuevo", Name: "Invitado Nuevo", code: "prueba09"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.guests.catalog = catalog
+
+	w := env.do(t, request{method: "GET", path: "/api/onboarding/guests"})
+	var got guestsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Guests) != 2 || got.Guests[1].ID != "nuevo" {
+		t.Fatalf("guests = %+v, want Carmencita and Invitado Nuevo", got.Guests)
+	}
+
+	// Liam was removed from the catalog: his session no longer gives access (FR-008).
+	env.attendance.statuses["liam"] = statusConfirmed
+	w = env.do(t, request{method: "GET", path: "/api/session", session: env.sessionFor("liam")})
+	assertError(t, w, http.StatusForbidden, codeNotInvited)
+}
+
+func TestCatalogUnavailable(t *testing.T) {
+	env := newTestEnv(t)
+	env.attendance.statuses["carmencita"] = statusConfirmed
+	env.guests.err = errors.New(`invitados: "Ana" y "Luis" tienen el mismo código`)
+
+	w := env.do(t, request{method: "GET", path: "/api/onboarding/guests"})
+	assertError(t, w, http.StatusInternalServerError, codeInternal)
+	if strings.Contains(w.Body.String(), "Ana") {
+		t.Fatalf("response leaks the internal error: %s", w.Body.String())
+	}
+
+	w = env.do(t, request{method: "POST", path: "/api/session/reentry", device: testDevice,
+		body: map[string]string{"code": "prueba01"}})
+	assertError(t, w, http.StatusInternalServerError, codeInternal)
+
+	w = env.do(t, request{method: "GET", path: "/api/session", session: env.sessionFor("carmencita")})
+	assertError(t, w, http.StatusInternalServerError, codeInternal)
 }
 
 func TestVerify(t *testing.T) {

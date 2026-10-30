@@ -100,7 +100,11 @@ func (s *server) requireSession(next func(http.ResponseWriter, *http.Request, Gu
 			writeError(w, http.StatusUnauthorized, codeUnauthenticated)
 			return
 		}
-		guest, ok := s.catalog.ByID(guestID)
+		catalog, ok := s.loadCatalog(w, r)
+		if !ok {
+			return
+		}
+		guest, ok := catalog.ByID(guestID)
 		if !ok {
 			writeError(w, http.StatusForbidden, codeNotInvited)
 			return

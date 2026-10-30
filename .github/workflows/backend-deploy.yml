@@ -61,12 +61,12 @@ jobs:
       - name: go test
         run: go test ./...
 
+      # El catálogo de invitados vive en Firestore (events/{EVENT_ID}/users); el único secreto es la
+      # llave de sesión.
       - name: Validate secrets
         run: |
-          test -n "$GUESTS_JSON" || (echo "Missing GitHub secret GUESTS_JSON" && exit 1)
           test -n "$SESSION_KEY" || (echo "Missing GitHub secret SESSION_KEY" && exit 1)
         env:
-          GUESTS_JSON: ${{ secrets.GUESTS_JSON }}
           SESSION_KEY: ${{ secrets.SESSION_KEY }}
 
       - name: Authenticate to GCP (OIDC)
@@ -87,8 +87,6 @@ jobs:
       - name: Push Docker image
         run: docker push "$IMAGE:$GITHUB_SHA"
 
-      # "^;^" cambia el separador de variables a ";" para que las comas de GUESTS_JSON no lo
-      # partan. Por eso ningún código de invitación puede contener ";".
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy "$SERVICE" \
@@ -99,7 +97,6 @@ jobs:
             --port 8080 \
             --service-account "vamosjuntos-backend-run@$PROJECT_ID.iam.gserviceaccount.com" \
             --max-instances 2 \
-            --set-env-vars "^;^EVENT_ID=$EVENT_ID;FIRESTORE_DATABASE=$FIRESTORE_DATABASE;GUESTS_JSON=$GUESTS_JSON;SESSION_KEY=$SESSION_KEY"
+            --set-env-vars "^;^EVENT_ID=$EVENT_ID;FIRESTORE_DATABASE=$FIRESTORE_DATABASE;SESSION_KEY=$SESSION_KEY"
         env:
-          GUESTS_JSON: ${{ secrets.GUESTS_JSON }}
           SESSION_KEY: ${{ secrets.SESSION_KEY }}

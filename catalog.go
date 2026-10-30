@@ -1,12 +1,14 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"cloud.google.com/go/firestore"
 )
 
 const (
@@ -22,56 +24,40 @@ type Guest struct {
 	code string
 }
 
-// Catalog is the closed list of guests configured in GUESTS_JSON. It is immutable after
-// parseCatalog returns.
+// Catalog is the closed list of guests stored in events/{EVENT_ID}/users. It is immutable after
+// newCatalog returns.
 type Catalog struct {
 	guests []Guest // sorted alphabetically, ignoring accents
 	byID   map[string]Guest
 }
 
-// parseCatalog parses and validates GUESTS_JSON, whose format is [["Nombre","código"], ...].
-// Error messages may name guests but never include their codes.
-func parseCatalog(raw string) (Catalog, error) {
-	var rows [][]string
-	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
-		return Catalog{}, errors.New(`GUESTS_JSON: formato inválido, se espera [["Nombre","código"], ...]`)
+// newCatalog trims and validates guests (FR-013, FR-016) and builds the catalog. Error messages
+// may name guests but never include their codes.
+func newCatalog(guests []Guest) (Catalog, error) {
+	if len(guests) == 0 {
+		return Catalog{}, errors.New("invitados: el catálogo está vacío")
 	}
-	if len(rows) == 0 {
-		return Catalog{}, errors.New("GUESTS_JSON: el catálogo está vacío")
-	}
-	if len(rows) > maxGuests {
-		return Catalog{}, fmt.Errorf("GUESTS_JSON: hay %d invitados y el máximo es %d", len(rows), maxGuests)
+	if len(guests) > maxGuests {
+		return Catalog{}, fmt.Errorf("invitados: hay %d y el máximo es %d", len(guests), maxGuests)
 	}
 
-	c := Catalog{byID: make(map[string]Guest, len(rows))}
-	ownerOfCode := make(map[string]string, len(rows))
-	for i, row := range rows {
-		if len(row) != 2 {
-			return Catalog{}, fmt.Errorf("GUESTS_JSON: la fila %d debe tener nombre y código", i+1)
+	c := Catalog{byID: make(map[string]Guest, len(guests))}
+	ownerOfCode := make(map[string]string, len(guests))
+	for _, g := range guests {
+		g.Name = strings.TrimSpace(g.Name)
+		g.code = strings.TrimSpace(g.code)
+		if g.Name == "" {
+			return Catalog{}, fmt.Errorf("invitados: el documento %s no tiene Nombre", g.ID)
 		}
-		name := strings.TrimSpace(row[0])
-		code := strings.TrimSpace(row[1])
-		if name == "" {
-			return Catalog{}, fmt.Errorf("GUESTS_JSON: la fila %d tiene el nombre vacío", i+1)
+		if utf8.RuneCountInString(g.code) < minCodeLength {
+			return Catalog{}, fmt.Errorf("invitados: el código de %q tiene menos de %d caracteres", g.Name, minCodeLength)
 		}
-		if utf8.RuneCountInString(code) < minCodeLength {
-			return Catalog{}, fmt.Errorf("GUESTS_JSON: el código de %q tiene menos de %d caracteres", name, minCodeLength)
-		}
-		codeKey := strings.ToLower(code)
+		codeKey := strings.ToLower(g.code)
 		if other, ok := ownerOfCode[codeKey]; ok {
-			return Catalog{}, fmt.Errorf("GUESTS_JSON: %q y %q tienen el mismo código", other, name)
+			return Catalog{}, fmt.Errorf("invitados: %q y %q tienen el mismo código", other, g.Name)
 		}
-		ownerOfCode[codeKey] = name
-
-		id := slug(name)
-		if id == "" {
-			return Catalog{}, fmt.Errorf("GUESTS_JSON: el nombre %q no genera un id válido", name)
-		}
-		if other, ok := c.byID[id]; ok {
-			return Catalog{}, fmt.Errorf("GUESTS_JSON: %q y %q generan el mismo id %q", other.Name, name, id)
-		}
-		g := Guest{ID: id, Name: name, code: code}
-		c.byID[id] = g
+		ownerOfCode[codeKey] = g.Name
+		c.byID[g.ID] = g
 		c.guests = append(c.guests, g)
 	}
 
@@ -127,21 +113,41 @@ func foldAccents(s string) string {
 	return accentReplacer.Replace(strings.ToLower(s))
 }
 
-// slug builds a stable id from a name: lowercase, without accents, with runs of any other
-// character turned into a single "-". "papá de lore" becomes "papa-de-lore".
-func slug(name string) string {
-	var b strings.Builder
-	pendingDash := false
-	for _, r := range foldAccents(name) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			if pendingDash && b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			pendingDash = false
-			b.WriteRune(r)
-			continue
-		}
-		pendingDash = true
+// guestDoc is a document of events/{EVENT_ID}/users, created by hand in the Firestore console.
+// Its field names are the ones the organizer chose. Other fields (such as "confirmado") are
+// ignored: attendance lives in events/{EVENT_ID}/attendance.
+type guestDoc struct {
+	Name string `firestore:"Nombre"`
+	Code string `firestore:"código"`
+}
+
+// GuestStore reads the guest catalog. The app never writes it (Principle I).
+type GuestStore struct {
+	client  *firestore.Client
+	eventID string
+}
+
+// NewGuestStore returns a GuestStore for events/{eventID}/users.
+func NewGuestStore(client *firestore.Client, eventID string) *GuestStore {
+	return &GuestStore{client: client, eventID: eventID}
+}
+
+// Catalog reads and validates the whole catalog (at most 25 documents). It runs on every request
+// that needs it, so the organizer's changes apply without a new deployment (FR-001). The guest id
+// is the document id, which does not change when the name is edited.
+func (s *GuestStore) Catalog(ctx context.Context) (Catalog, error) {
+	snaps, err := s.client.Collection("events").Doc(s.eventID).Collection("users").Documents(ctx).GetAll()
+	if err != nil {
+		return Catalog{}, fmt.Errorf("list guests of %s: %w", s.eventID, err)
 	}
-	return b.String()
+	guests := make([]Guest, 0, len(snaps))
+	for _, snap := range snaps {
+		var d guestDoc
+		if err := snap.DataTo(&d); err != nil {
+			// The decoding error is not wrapped because it could quote a field value.
+			return Catalog{}, fmt.Errorf("invitados: el documento %s debe tener Nombre y código de tipo texto", snap.Ref.ID)
+		}
+		guests = append(guests, Guest{ID: snap.Ref.ID, Name: d.Name, code: d.Code})
+	}
+	return newCatalog(guests)
 }

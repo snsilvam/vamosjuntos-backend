@@ -13,6 +13,10 @@ const maxBodyBytes = 4 << 10
 
 // Small interfaces, defined where they are consumed so handlers can be tested with fakes.
 
+type guestCatalog interface {
+	Catalog(ctx context.Context) (Catalog, error)
+}
+
 type eventGetter interface {
 	Get(ctx context.Context) (Event, error)
 }
@@ -28,7 +32,7 @@ type attemptLimiter interface {
 }
 
 type server struct {
-	catalog    Catalog
+	guests     guestCatalog
 	events     eventGetter
 	attendance attendanceRecorder
 	attempts   attemptLimiter
@@ -37,9 +41,9 @@ type server struct {
 }
 
 // NewServer wires the HTTP handlers with their dependencies.
-func NewServer(catalog Catalog, events eventGetter, attendance attendanceRecorder, attempts attemptLimiter, sessionKey []byte) *server {
+func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRecorder, attempts attemptLimiter, sessionKey []byte) *server {
 	return &server{
-		catalog:    catalog,
+		guests:     guests,
 		events:     events,
 		attendance: attendance,
 		attempts:   attempts,
@@ -92,13 +96,17 @@ func (s *server) handleGuests(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.loadEvent(w, r); !ok {
 		return
 	}
+	catalog, ok := s.loadCatalog(w, r)
+	if !ok {
+		return
+	}
 	statuses, err := s.attendance.Statuses(r.Context())
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	pending := []Guest{}
-	for _, g := range s.catalog.Sorted() {
+	for _, g := range catalog.Sorted() {
 		if statuses[g.ID] == statusPending {
 			pending = append(pending, g)
 		}
@@ -123,7 +131,11 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	guest, ok := s.catalog.ByID(req.GuestID)
+	catalog, ok := s.loadCatalog(w, r)
+	if !ok {
+		return
+	}
+	guest, ok := catalog.ByID(req.GuestID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeGuestNotFound)
 		return
@@ -137,7 +149,7 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, codeAlreadyResponded)
 		return
 	}
-	match := s.catalog.Matches(guest.ID, req.Code)
+	match := catalog.Matches(guest.ID, req.Code)
 	if !s.checkCode(r.Context(), w, device, match) {
 		return
 	}
@@ -171,12 +183,16 @@ func (s *server) handleRespond(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	guest, ok := s.catalog.ByID(req.GuestID)
+	catalog, ok := s.loadCatalog(w, r)
+	if !ok {
+		return
+	}
+	guest, ok := catalog.ByID(req.GuestID)
 	if !ok {
 		writeError(w, http.StatusNotFound, codeGuestNotFound)
 		return
 	}
-	match := s.catalog.Matches(guest.ID, req.Code)
+	match := catalog.Matches(guest.ID, req.Code)
 	if !s.checkCode(r.Context(), w, device, match) {
 		return
 	}
@@ -223,7 +239,11 @@ func (s *server) handleReentry(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	guest, found := s.catalog.ByCode(req.Code)
+	catalog, ok := s.loadCatalog(w, r)
+	if !ok {
+		return
+	}
+	guest, found := catalog.ByCode(req.Code)
 	if !s.checkCode(r.Context(), w, device, found) {
 		return
 	}
@@ -276,12 +296,16 @@ func (s *server) handleConfirmOther(w http.ResponseWriter, r *http.Request, me G
 	if _, ok := s.loadEvent(w, r); !ok {
 		return
 	}
-	target, ok := s.catalog.ByID(r.PathValue("guestID"))
+	catalog, ok := s.loadCatalog(w, r)
+	if !ok {
+		return
+	}
+	target, ok := catalog.ByID(r.PathValue("guestID"))
 	if !ok {
 		writeError(w, http.StatusNotFound, codeGuestNotFound)
 		return
 	}
-	match := s.catalog.Matches(target.ID, req.Code)
+	match := catalog.Matches(target.ID, req.Code)
 	if !s.checkCode(r.Context(), w, device, match) {
 		return
 	}
@@ -319,6 +343,17 @@ func (s *server) loadEvent(w http.ResponseWriter, r *http.Request) (Event, bool)
 		return Event{}, false
 	}
 	return event, true
+}
+
+// loadCatalog reads the guest catalog and writes a 500 when it cannot be read or is invalid; the
+// reason (without codes) goes to the log.
+func (s *server) loadCatalog(w http.ResponseWriter, r *http.Request) (Catalog, bool) {
+	catalog, err := s.guests.Catalog(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return Catalog{}, false
+	}
+	return catalog, true
 }
 
 // checkCode enforces the attempt limit (FR-010) and records the result of a code comparison.
