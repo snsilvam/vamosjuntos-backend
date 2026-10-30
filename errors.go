@@ -1,0 +1,64 @@
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"math"
+	"net/http"
+	"strconv"
+	"time"
+)
+
+// Error codes returned in {"error":{"code":"..."}}. The frontend translates each one into a
+// friendly message; the backend never sends technical text to the user.
+const (
+	codeInvalidRequest   = "invalid_request"
+	codeMissingDeviceID  = "missing_device_id"
+	codeInvalidCode      = "invalid_code"
+	codeTooManyAttempts  = "too_many_attempts"
+	codeEventNotFound    = "event_not_found"
+	codeGuestNotFound    = "guest_not_found"
+	codeAlreadyResponded = "already_responded"
+	codeAlreadyConfirmed = "already_confirmed"
+	codePendingUseList   = "pending_use_list"
+	codeUnauthenticated  = "unauthenticated"
+	codeNotInvited       = "not_invited"
+	codeInternal         = "internal"
+)
+
+type errorBody struct {
+	Error errorDetail `json:"error"`
+}
+
+type errorDetail struct {
+	Code              string `json:"code"`
+	RetryAfterSeconds int    `json:"retryAfterSeconds,omitempty"`
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("write response: %v", err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, code string) {
+	writeJSON(w, status, errorBody{Error: errorDetail{Code: code}})
+}
+
+func writeTooManyAttempts(w http.ResponseWriter, retryAfter time.Duration) {
+	seconds := int(math.Ceil(retryAfter.Seconds()))
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	writeJSON(w, http.StatusTooManyRequests, errorBody{Error: errorDetail{
+		Code:              codeTooManyAttempts,
+		RetryAfterSeconds: seconds,
+	}})
+}
+
+// writeInternalError logs the cause and answers with a generic 500. The cause never reaches
+// the client (Principle V).
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("internal error: %v", err)
+	writeError(w, http.StatusInternalServerError, codeInternal)
+}

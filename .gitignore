@@ -1,0 +1,12 @@
+# Binarios
+*.exe
+*.test
+*.out
+/vamosjuntos-backend
+
+# Variables locales (GUESTS_JSON, SESSION_KEY): nunca se versionan
+.env*
+
+# Editores
+.idea/
+.vscode/
