@@ -1,0 +1,105 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - production
+  # Relanzar sin commits nuevos (Actions → Run workflow).
+  workflow_dispatch:
+
+# Un despliegue a la vez. Si llegan varios, solo espera el más reciente y el que está en curso
+# termina.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: vamosjuntos-club
+  REGION: us-central1
+  SERVICE: vamosjuntos-backend
+  IMAGE: us-central1-docker.pkg.dev/vamosjuntos-club/containers/vamosjuntos-backend
+  EVENT_ID: paseo-familiar-diciembre-2026
+  FIRESTORE_DATABASE: vamosjuntos-club-db
+
+jobs:
+  deploy:
+    # "Run workflow" desde otra rama no publica nada.
+    if: github.ref == 'refs/heads/production'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write # 🔑 OIDC obligatorio
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      # Compuertas de calidad (constitución, Principio IV): si alguna falla, no se despliega.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Archivos sin formato:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+      - name: go test
+        run: go test ./...
+
+      - name: Validate secrets
+        run: |
+          test -n "$GUESTS_JSON" || (echo "Missing GitHub secret GUESTS_JSON" && exit 1)
+          test -n "$SESSION_KEY" || (echo "Missing GitHub secret SESSION_KEY" && exit 1)
+        env:
+          GUESTS_JSON: ${{ secrets.GUESTS_JSON }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+
+      - name: Authenticate to GCP (OIDC)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/54833988307/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-actions-cloud-run@vamosjuntos-club.iam.gserviceaccount.com
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: docker build -t "$IMAGE:$GITHUB_SHA" .
+
+      - name: Push Docker image
+        run: docker push "$IMAGE:$GITHUB_SHA"
+
+      # "^;^" cambia el separador de variables a ";" para que las comas de GUESTS_JSON no lo
+      # partan. Por eso ningún código de invitación puede contener ";".
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE:$GITHUB_SHA" \
+            --region "$REGION" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --service-account "vamosjuntos-backend-run@$PROJECT_ID.iam.gserviceaccount.com" \
+            --max-instances 2 \
+            --set-env-vars "^;^EVENT_ID=$EVENT_ID;FIRESTORE_DATABASE=$FIRESTORE_DATABASE;GUESTS_JSON=$GUESTS_JSON;SESSION_KEY=$SESSION_KEY"
+        env:
+          GUESTS_JSON: ${{ secrets.GUESTS_JSON }}
+          SESSION_KEY: ${{ secrets.SESSION_KEY }}
