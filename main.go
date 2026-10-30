@@ -31,11 +31,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	projectID := cfg.ProjectID
-	if projectID == "" {
-		projectID = firestore.DetectProjectID
-	}
-	client, err := firestore.NewClientWithDatabase(ctx, projectID, cfg.DatabaseID)
+	client, err := firestore.NewClientWithDatabase(ctx, cfg.ProjectID, cfg.DatabaseID)
 	if err != nil {
 		return fmt.Errorf("firestore client: %w", err)
 	}
@@ -63,9 +59,14 @@ func run() error {
 		return err
 	}
 
+	verifier, err := NewFirebaseVerifier(ctx, cfg.ProjectID)
+	if err != nil {
+		return err
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           NewServer(guests, events, NewAttendanceStore(client, cfg.EventID), NewAttemptStore(client), cfg.SessionKey).routes(),
+		Handler:           NewServer(guests, events, NewAttendanceStore(client, cfg.EventID), NewAttemptStore(client), verifier, NewLinkStore(client, cfg.EventID)).routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

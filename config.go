@@ -1,18 +1,11 @@
 package main
 
-import (
-	"encoding/base64"
-	"errors"
-	"fmt"
-)
-
-const sessionKeyBytes = 32
+import "errors"
 
 // Config holds the process configuration read from environment variables.
 type Config struct {
-	SessionKey []byte
-	EventID    string
-	// ProjectID is optional: on Cloud Run it is detected from the metadata server.
+	EventID string
+	// ProjectID is required: Firebase ID tokens are checked against it (their "aud" claim).
 	ProjectID string
 	// DatabaseID is the Firestore database; "(default)" unless FIRESTORE_DATABASE says otherwise.
 	DatabaseID string
@@ -20,7 +13,7 @@ type Config struct {
 }
 
 // loadConfig reads the configuration using getenv (os.Getenv in production). Errors name the
-// variable that failed but never include its value, because some of them are secrets.
+// variable that failed but never include its value.
 func loadConfig(getenv func(string) string) (Config, error) {
 	c := Config{
 		EventID:    getenv("EVENT_ID"),
@@ -37,18 +30,8 @@ func loadConfig(getenv func(string) string) (Config, error) {
 	if c.EventID == "" {
 		return Config{}, errors.New("falta la variable EVENT_ID")
 	}
-
-	rawKey := getenv("SESSION_KEY")
-	if rawKey == "" {
-		return Config{}, errors.New("falta la variable SESSION_KEY")
+	if c.ProjectID == "" {
+		return Config{}, errors.New("falta la variable GOOGLE_CLOUD_PROJECT")
 	}
-	key, err := base64.StdEncoding.DecodeString(rawKey)
-	if err != nil {
-		return Config{}, errors.New("SESSION_KEY no es base64 válido")
-	}
-	if len(key) != sessionKeyBytes {
-		return Config{}, fmt.Errorf("SESSION_KEY debe decodificar a %d bytes", sessionKeyBytes)
-	}
-	c.SessionKey = key
 	return c, nil
 }

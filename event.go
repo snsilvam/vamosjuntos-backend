@@ -14,8 +14,6 @@ import (
 // colombia is UTC-5 all year: Colombia has no daylight saving time.
 var colombia = time.FixedZone("COT", -5*60*60)
 
-const sessionGracePeriod = 7 * 24 * time.Hour
-
 var errEventNotFound = errors.New("event not found")
 
 // Event is the trip document that the organizer creates by hand in events/{EVENT_ID}.
@@ -55,11 +53,6 @@ func (e Event) Summary() EventSummary {
 		Destination:     e.Destination,
 		DeparturePlaces: e.DeparturePlaces,
 	}
-}
-
-// sessionExpiry is when a session created for e stops being valid (FR-009).
-func sessionExpiry(e Event) time.Time {
-	return e.EndsAt.Add(sessionGracePeriod)
 }
 
 // EventStore reads the event document. The app never writes it (Principle I).

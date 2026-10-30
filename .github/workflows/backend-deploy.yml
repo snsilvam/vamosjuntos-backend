@@ -61,14 +61,6 @@ jobs:
       - name: go test
         run: go test ./...
 
-      # El catálogo de invitados vive en Firestore (events/{EVENT_ID}/users); el único secreto es la
-      # llave de sesión.
-      - name: Validate secrets
-        run: |
-          test -n "$SESSION_KEY" || (echo "Missing GitHub secret SESSION_KEY" && exit 1)
-        env:
-          SESSION_KEY: ${{ secrets.SESSION_KEY }}
-
       - name: Authenticate to GCP (OIDC)
         uses: google-github-actions/auth@v3
         with:
@@ -97,6 +89,4 @@ jobs:
             --port 8080 \
             --service-account "vamosjuntos-backend-run@$PROJECT_ID.iam.gserviceaccount.com" \
             --max-instances 2 \
-            --set-env-vars "^;^EVENT_ID=$EVENT_ID;FIRESTORE_DATABASE=$FIRESTORE_DATABASE;SESSION_KEY=$SESSION_KEY"
-        env:
-          SESSION_KEY: ${{ secrets.SESSION_KEY }}
+            --set-env-vars "^;^GOOGLE_CLOUD_PROJECT=$PROJECT_ID;EVENT_ID=$EVENT_ID;FIRESTORE_DATABASE=$FIRESTORE_DATABASE"

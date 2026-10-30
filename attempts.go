@@ -15,13 +15,13 @@ const (
 	blockDuration     = 15 * time.Minute
 )
 
-// attemptState counts consecutive failed code attempts from one device (FR-010).
+// attemptState counts consecutive failed code attempts from one account (FR-014 of spec 008).
 type attemptState struct {
 	Failures     int       `firestore:"failures"`
 	BlockedUntil time.Time `firestore:"blockedUntil"`
 }
 
-// blockedFor returns how long the device stays blocked, or 0 if it is not blocked.
+// blockedFor returns how long the account stays blocked, or 0 if it is not blocked.
 func blockedFor(s attemptState, now time.Time) time.Duration {
 	if now.Before(s.BlockedUntil) {
 		return s.BlockedUntil.Sub(now)
@@ -30,7 +30,7 @@ func blockedFor(s attemptState, now time.Time) time.Duration {
 }
 
 // registerAttempt returns the state after an attempt. A success resets the counter; the fifth
-// consecutive failure blocks the device for 15 minutes and starts a new count.
+// consecutive failure blocks the account for 15 minutes and starts a new count.
 func registerAttempt(s attemptState, ok bool, now time.Time) attemptState {
 	if ok {
 		return attemptState{}
@@ -42,7 +42,7 @@ func registerAttempt(s attemptState, ok bool, now time.Time) attemptState {
 	return s
 }
 
-// AttemptStore keeps attempt counters in loginAttempts/{deviceId}.
+// AttemptStore keeps attempt counters in loginAttempts/{uid}.
 type AttemptStore struct {
 	client *firestore.Client
 	now    func() time.Time
@@ -53,13 +53,13 @@ func NewAttemptStore(client *firestore.Client) *AttemptStore {
 	return &AttemptStore{client: client, now: time.Now}
 }
 
-func (s *AttemptStore) doc(deviceID string) *firestore.DocumentRef {
-	return s.client.Collection("loginAttempts").Doc(deviceID)
+func (s *AttemptStore) doc(uid string) *firestore.DocumentRef {
+	return s.client.Collection("loginAttempts").Doc(uid)
 }
 
-// Blocked returns how long deviceID stays blocked, or 0.
-func (s *AttemptStore) Blocked(ctx context.Context, deviceID string) (time.Duration, error) {
-	snap, err := s.doc(deviceID).Get(ctx)
+// Blocked returns how long the account uid stays blocked, or 0.
+func (s *AttemptStore) Blocked(ctx context.Context, uid string) (time.Duration, error) {
+	snap, err := s.doc(uid).Get(ctx)
 	if status.Code(err) == codes.NotFound {
 		return 0, nil
 	}
@@ -73,9 +73,9 @@ func (s *AttemptStore) Blocked(ctx context.Context, deviceID string) (time.Durat
 	return blockedFor(st, s.now()), nil
 }
 
-// Record stores the result of one attempt from deviceID.
-func (s *AttemptStore) Record(ctx context.Context, deviceID string, ok bool) error {
-	ref := s.doc(deviceID)
+// Record stores the result of one attempt from the account uid.
+func (s *AttemptStore) Record(ctx context.Context, uid string, ok bool) error {
+	ref := s.doc(uid)
 	if ok {
 		if _, err := ref.Delete(ctx); err != nil {
 			return fmt.Errorf("reset attempts: %w", err)
