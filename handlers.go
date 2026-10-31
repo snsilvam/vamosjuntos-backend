@@ -54,12 +54,13 @@ type server struct {
 	links      linkStore
 	transport  transportStore
 	itinerary  itineraryStore
+	purchases  purchaseStore
 	// now is the clock of the countdown (spec 004); tests replace it with a fixed date.
 	now func() time.Time
 }
 
 // NewServer wires the HTTP handlers with their dependencies.
-func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRecorder, attempts attemptLimiter, verifier tokenVerifier, links linkStore, transport transportStore, itinerary itineraryStore) *server {
+func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRecorder, attempts attemptLimiter, verifier tokenVerifier, links linkStore, transport transportStore, itinerary itineraryStore, purchases purchaseStore) *server {
 	return &server{
 		guests:     guests,
 		events:     events,
@@ -69,6 +70,7 @@ func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRec
 		links:      links,
 		transport:  transport,
 		itinerary:  itinerary,
+		purchases:  purchases,
 		now:        time.Now,
 	}
 }
@@ -93,6 +95,13 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/itinerary/activities", s.requireGuest(s.handleCreateActivity))
 	mux.HandleFunc("PUT /api/itinerary/activities/{activityID}", s.requireGuest(s.handleUpdateActivity))
 	mux.HandleFunc("DELETE /api/itinerary/activities/{activityID}", s.requireGuest(s.handleDeleteActivity))
+	mux.HandleFunc("GET /api/purchases", s.requireGuest(s.handlePurchases))
+	mux.HandleFunc("POST /api/purchases/items", s.requireGuest(s.handleCreateItem))
+	mux.HandleFunc("PUT /api/purchases/items/{itemID}", s.requireGuest(s.handleUpdateItem))
+	mux.HandleFunc("DELETE /api/purchases/items/{itemID}", s.requireGuest(s.handleDeleteItem))
+	mux.HandleFunc("POST /api/purchases/items/{itemID}/take", s.requireGuest(s.handleTakeItem))
+	mux.HandleFunc("POST /api/purchases/items/{itemID}/release", s.requireGuest(s.handleReleaseItem))
+	mux.HandleFunc("POST /api/purchases/items/{itemID}/bought", s.requireGuest(s.handleMarkBought))
 	return noStore(mux)
 }
 

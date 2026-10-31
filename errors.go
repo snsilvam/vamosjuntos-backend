@@ -41,6 +41,12 @@ const (
 	codeActivityOutOfRange = "activity_out_of_range"
 	codeActivityTimeOrder  = "activity_time_order"
 	codeActivityNotFound   = "activity_not_found"
+
+	// Purchases module (spec 007).
+	codeInvalidItem    = "invalid_item"
+	codeItemNotFound   = "item_not_found"
+	codeItemTaken      = "item_taken"
+	codeNotResponsible = "not_responsible"
 )
 
 type errorBody struct {
