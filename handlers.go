@@ -40,6 +40,11 @@ type linkStore interface {
 	Link(ctx context.Context, uid, email, guestID string) error
 }
 
+type transportStore interface {
+	List(ctx context.Context) ([]Vehicle, error)
+	Apply(ctx context.Context, cmd transportCmd, confirmed map[string]bool, by string) error
+}
+
 type server struct {
 	guests     guestCatalog
 	events     eventGetter
@@ -47,12 +52,13 @@ type server struct {
 	attempts   attemptLimiter
 	verifier   tokenVerifier
 	links      linkStore
+	transport  transportStore
 	// now is the clock of the countdown (spec 004); tests replace it with a fixed date.
 	now func() time.Time
 }
 
 // NewServer wires the HTTP handlers with their dependencies.
-func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRecorder, attempts attemptLimiter, verifier tokenVerifier, links linkStore) *server {
+func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRecorder, attempts attemptLimiter, verifier tokenVerifier, links linkStore, transport transportStore) *server {
 	return &server{
 		guests:     guests,
 		events:     events,
@@ -60,6 +66,7 @@ func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRec
 		attempts:   attempts,
 		verifier:   verifier,
 		links:      links,
+		transport:  transport,
 		now:        time.Now,
 	}
 }
@@ -72,6 +79,13 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/onboarding/respond", s.requireAccount(s.handleRespond))
 	mux.HandleFunc("POST /api/guests/{guestID}/confirmation", s.requireGuest(s.handleConfirmOther))
 	mux.HandleFunc("GET /api/event", s.requireGuest(s.handleEvent))
+	// Transport module (spec 005).
+	mux.HandleFunc("GET /api/transport", s.requireGuest(s.handleTransport))
+	mux.HandleFunc("POST /api/transport/vehicles", s.requireGuest(s.handleCreateVehicle))
+	mux.HandleFunc("PUT /api/transport/vehicles/{vehicleID}", s.requireGuest(s.handleUpdateVehicle))
+	mux.HandleFunc("DELETE /api/transport/vehicles/{vehicleID}", s.requireGuest(s.handleDeleteVehicle))
+	mux.HandleFunc("POST /api/transport/vehicles/{vehicleID}/passengers", s.requireGuest(s.handleReserveSeat))
+	mux.HandleFunc("DELETE /api/transport/vehicles/{vehicleID}/passengers/{guestID}", s.requireGuest(s.handleReleaseSeat))
 	mux.HandleFunc("GET /api/countdown", s.requireGuest(s.handleCountdown))
 	return noStore(mux)
 }

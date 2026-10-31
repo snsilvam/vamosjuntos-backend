@@ -25,6 +25,16 @@ const (
 	codeNotLinked            = "not_linked"
 	codeNotInvited           = "not_invited"
 	codeInternal             = "internal"
+
+	// Transport module (spec 005).
+	codeInvalidVehicle       = "invalid_vehicle"
+	codeDriverUnavailable    = "driver_unavailable"
+	codeSeatsBelowPassengers = "seats_below_passengers"
+	codeVehicleFull          = "vehicle_full"
+	codeGuestIsDriver        = "guest_is_driver"
+	codeGuestNotConfirmed    = "guest_not_confirmed"
+	codeVehicleNotFound      = "vehicle_not_found"
+	codePassengerNotFound    = "passenger_not_found"
 )
 
 type errorBody struct {

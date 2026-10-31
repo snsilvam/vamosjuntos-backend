@@ -49,7 +49,7 @@ func TestCountdownAt(t *testing.T) {
 func newCountdownEnv(t *testing.T, now time.Time) *testEnv {
 	t.Helper()
 	env := newTestEnv(t)
-	srv := NewServer(env.guests, env.events, env.attendance, env.attempts, testAccounts, env.links)
+	srv := NewServer(env.guests, env.events, env.attendance, env.attempts, testAccounts, env.links, env.transport)
 	srv.now = func() time.Time { return now }
 	env.handler = srv.routes()
 	return env
