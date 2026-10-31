@@ -17,12 +17,13 @@ const (
 	phaseFinished = "finished"
 )
 
-// Countdown is what the banner shows. SecondsToNextChange is relative so the frontend never needs
-// the device clock (FR-003); it is left out once the event is over, because nothing changes again.
+// Countdown is what the banner shows. Relative durations let the frontend animate the countdown
+// without trusting the device clock (FR-003). They are left out once the event is over.
 type Countdown struct {
 	Phase               string `json:"phase"`
 	DaysLeft            int    `json:"daysLeft"`
 	SecondsToNextChange int    `json:"secondsToNextChange,omitempty"`
+	SecondsToStart      int    `json:"secondsToStart,omitempty"`
 }
 
 // countdownAt computes the countdown of e at now, with the rules of
@@ -42,6 +43,7 @@ func countdownAt(e Event, now time.Time) Countdown {
 	c := Countdown{
 		DaysLeft:            int(colombiaDate(e.StartsAt).Sub(colombiaDate(now)).Hours() / 24),
 		SecondsToNextChange: secondsUntil(now, earliest(nextMidnight, e.StartsAt)),
+		SecondsToStart:      secondsUntil(now, e.StartsAt),
 	}
 	switch {
 	case c.DaysLeft == 0:

@@ -18,23 +18,23 @@ func TestCountdownAt(t *testing.T) {
 		now  time.Time
 		want Countdown
 	}{
-		{"US1: 54 days on Oct 30", at(10, 30, 10, 0, 0), Countdown{phaseFar, 54, 50400}},
-		{"last second of far", at(11, 22, 23, 59, 59), Countdown{phaseFar, 31, 1}},
-		{"midnight starts near", at(11, 23, 0, 0, 0), Countdown{phaseNear, 30, 86400}},
-		{"last day of near", at(12, 15, 12, 0, 0), Countdown{phaseNear, 8, 43200}},
-		{"midnight starts last week", at(12, 16, 0, 0, 0), Countdown{phaseLastWeek, 7, 86400}},
-		{"tomorrow", at(12, 22, 8, 0, 0), Countdown{phaseTomorrow, 1, 57600}},
-		{"tomorrow at 11:59 p.m.", at(12, 22, 23, 59, 0), Countdown{phaseTomorrow, 1, 60}},
-		{"today waits for the start", at(12, 23, 0, 0, 0), Countdown{phaseToday, 0, 50400}},
-		{"starts exactly at 2:00 p.m.", at(12, 23, 14, 0, 0), Countdown{phaseOngoing, 0, 36000}},
-		{"last second of the trip", at(12, 26, 10, 59, 59), Countdown{phaseOngoing, 0, 1}},
-		{"ends exactly at 11:00 a.m.", at(12, 26, 11, 0, 0), Countdown{phaseFinished, 0, 0}},
-		{"long after", at(12, 31, 9, 0, 0), Countdown{phaseFinished, 0, 0}},
+		{"US1: 54 days on Oct 30", at(10, 30, 10, 0, 0), Countdown{phaseFar, 54, 50400, 4680000}},
+		{"last second of far", at(11, 22, 23, 59, 59), Countdown{phaseFar, 31, 1, 2642401}},
+		{"midnight starts near", at(11, 23, 0, 0, 0), Countdown{phaseNear, 30, 86400, 2642400}},
+		{"last day of near", at(12, 15, 12, 0, 0), Countdown{phaseNear, 8, 43200, 698400}},
+		{"midnight starts last week", at(12, 16, 0, 0, 0), Countdown{phaseLastWeek, 7, 86400, 655200}},
+		{"tomorrow", at(12, 22, 8, 0, 0), Countdown{phaseTomorrow, 1, 57600, 108000}},
+		{"tomorrow at 11:59 p.m.", at(12, 22, 23, 59, 0), Countdown{phaseTomorrow, 1, 60, 50460}},
+		{"today waits for the start", at(12, 23, 0, 0, 0), Countdown{phaseToday, 0, 50400, 50400}},
+		{"starts exactly at 2:00 p.m.", at(12, 23, 14, 0, 0), Countdown{phaseOngoing, 0, 36000, 0}},
+		{"last second of the trip", at(12, 26, 10, 59, 59), Countdown{phaseOngoing, 0, 1, 0}},
+		{"ends exactly at 11:00 a.m.", at(12, 26, 11, 0, 0), Countdown{phaseFinished, 0, 0, 0}},
+		{"long after", at(12, 31, 9, 0, 0), Countdown{phaseFinished, 0, 0, 0}},
 		// The same instant as the first case, seen from Madrid (SC-002).
-		{"other time zone", at(10, 30, 10, 0, 0).In(time.FixedZone("CET", 60*60)), Countdown{phaseFar, 54, 50400}},
+		{"other time zone", at(10, 30, 10, 0, 0).In(time.FixedZone("CET", 60*60)), Countdown{phaseFar, 54, 50400, 4680000}},
 		// 8:00 p.m. on Oct 30 in Colombia is already Oct 31 in UTC: Colombia's date wins.
-		{"UTC is already the next day", at(10, 30, 20, 0, 0).UTC(), Countdown{phaseFar, 54, 14400}},
-		{"sub-second rounds up", at(12, 22, 23, 59, 59).Add(500 * time.Millisecond), Countdown{phaseTomorrow, 1, 1}},
+		{"UTC is already the next day", at(10, 30, 20, 0, 0).UTC(), Countdown{phaseFar, 54, 14400, 4644000}},
+		{"sub-second rounds up", at(12, 22, 23, 59, 59).Add(500 * time.Millisecond), Countdown{phaseTomorrow, 1, 1, 50401}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -71,7 +71,7 @@ func TestCountdown(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"phase": "far", "daysLeft": float64(54), "secondsToNextChange": float64(50400)}
+	want := map[string]any{"phase": "far", "daysLeft": float64(54), "secondsToNextChange": float64(50400), "secondsToStart": float64(4680000)}
 	if len(got) != len(want) {
 		t.Fatalf("body = %s, want %v", w.Body.String(), want)
 	}
