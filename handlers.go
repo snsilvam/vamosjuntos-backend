@@ -47,6 +47,8 @@ type server struct {
 	attempts   attemptLimiter
 	verifier   tokenVerifier
 	links      linkStore
+	// now is the clock of the countdown (spec 004); tests replace it with a fixed date.
+	now func() time.Time
 }
 
 // NewServer wires the HTTP handlers with their dependencies.
@@ -58,6 +60,7 @@ func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRec
 		attempts:   attempts,
 		verifier:   verifier,
 		links:      links,
+		now:        time.Now,
 	}
 }
 
@@ -69,6 +72,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/onboarding/respond", s.requireAccount(s.handleRespond))
 	mux.HandleFunc("POST /api/guests/{guestID}/confirmation", s.requireGuest(s.handleConfirmOther))
 	mux.HandleFunc("GET /api/event", s.requireGuest(s.handleEvent))
+	mux.HandleFunc("GET /api/countdown", s.requireGuest(s.handleCountdown))
 	return noStore(mux)
 }
 
