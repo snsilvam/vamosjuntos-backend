@@ -68,6 +68,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/onboarding/link", s.requireAccount(s.handleLink))
 	mux.HandleFunc("POST /api/onboarding/respond", s.requireAccount(s.handleRespond))
 	mux.HandleFunc("POST /api/guests/{guestID}/confirmation", s.requireGuest(s.handleConfirmOther))
+	mux.HandleFunc("GET /api/event", s.requireGuest(s.handleEvent))
 	return noStore(mux)
 }
 
@@ -101,6 +102,12 @@ type guestsResponse struct {
 type statusResponse struct {
 	Status Status `json:"status"`
 	Guest  *Guest `json:"guest,omitempty"`
+}
+
+// eventResponse feeds the "Próximo viaje" card: only counts, never names (spec 003, FR-007).
+type eventResponse struct {
+	Event      EventSummary      `json:"event"`
+	Attendance AttendanceSummary `json:"attendance"`
 }
 
 // handleMe tells the app where the account belongs (FR-003, FR-007, FR-009).
@@ -319,6 +326,29 @@ func (s *server) handleConfirmOther(w http.ResponseWriter, r *http.Request, acco
 		return
 	}
 	writeJSON(w, http.StatusOK, statusResponse{Status: statusConfirmed, Guest: &target})
+}
+
+// handleEvent returns the trip and how attendance is going for the home card (spec 003,
+// FR-002, FR-004). requireGuest already read the attendance; reading it again is cheap with at
+// most 25 guests (research R6).
+func (s *server) handleEvent(w http.ResponseWriter, r *http.Request, _ Account, _ Guest) {
+	event, ok := s.loadEvent(w, r)
+	if !ok {
+		return
+	}
+	catalog, ok := s.loadCatalog(w, r)
+	if !ok {
+		return
+	}
+	statuses, err := s.attendance.Statuses(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, eventResponse{
+		Event:      event.Summary(),
+		Attendance: summarizeAttendance(catalog, statuses),
+	})
 }
 
 // loadEvent reads the event and writes the error response when it is not available.

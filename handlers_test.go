@@ -522,3 +522,84 @@ func TestCatalogUnavailable(t *testing.T) {
 	w = env.do(t, request{method: "GET", path: "/api/me", token: "ana"})
 	assertError(t, w, http.StatusInternalServerError, codeInternal)
 }
+
+// --- Spec 003: card "Próximo viaje" ---
+
+func TestEvent(t *testing.T) {
+	env := newTestEnv(t)
+	env.links["carmencita"] = "uid-ana"
+	env.attendance.statuses["carmencita"] = statusConfirmed
+	env.attendance.statuses["papa-de-lore"] = statusDeclined
+
+	w := env.do(t, request{method: "GET", path: "/api/event", token: "ana"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	var got eventResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	wantEvent := EventSummary{
+		Name:            "Paseo Familiar Diciembre 2026",
+		StartsAt:        "2026-12-23T14:00:00-05:00",
+		EndsAt:          "2026-12-26T11:00:00-05:00",
+		Destination:     "Acacías, Meta, Colombia",
+		DeparturePlaces: []string{"Bogotá", "Tocancipá"},
+	}
+	if got.Event.Name != wantEvent.Name || got.Event.StartsAt != wantEvent.StartsAt ||
+		got.Event.EndsAt != wantEvent.EndsAt || got.Event.Destination != wantEvent.Destination ||
+		strings.Join(got.Event.DeparturePlaces, ",") != strings.Join(wantEvent.DeparturePlaces, ",") {
+		t.Fatalf("event = %+v, want %+v", got.Event, wantEvent)
+	}
+	wantAttendance := AttendanceSummary{Invited: 3, Confirmed: 1, Declined: 1, Pending: 1}
+	if got.Attendance != wantAttendance {
+		t.Fatalf("attendance = %+v, want %+v", got.Attendance, wantAttendance)
+	}
+
+	// Only counts: no guest names, ids or codes (FR-007).
+	body := w.Body.String()
+	for _, leak := range []string{"Carmencita", "carmencita", "Liam", "liam", "papá de lore", "papa-de-lore", "prueba0"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("response leaks %q: %s", leak, body)
+		}
+	}
+}
+
+func TestEventCountsChangeAfterConfirmingOther(t *testing.T) {
+	env := newTestEnv(t)
+	env.links["carmencita"] = "uid-ana"
+	env.attendance.statuses["carmencita"] = statusConfirmed
+
+	w := env.do(t, request{method: "POST", path: "/api/guests/liam/confirmation", token: "ana", body: map[string]string{"code": "prueba02"}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm other: status = %d, body %s", w.Code, w.Body.String())
+	}
+	w = env.do(t, request{method: "GET", path: "/api/event", token: "ana"})
+	var got eventResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if want := (AttendanceSummary{Invited: 3, Confirmed: 2, Pending: 1}); got.Attendance != want {
+		t.Fatalf("attendance = %+v, want %+v", got.Attendance, want)
+	}
+}
+
+func TestEventErrors(t *testing.T) {
+	env := newTestEnv(t)
+	path := "/api/event"
+
+	w := env.do(t, request{method: "GET", path: path})
+	assertError(t, w, http.StatusUnauthorized, codeUnauthenticated)
+
+	w = env.do(t, request{method: "GET", path: path, token: "ana"})
+	assertError(t, w, http.StatusForbidden, codeNotLinked)
+
+	env.links["carmencita"] = "uid-ana" // linked but still pending
+	w = env.do(t, request{method: "GET", path: path, token: "ana"})
+	assertError(t, w, http.StatusForbidden, codeNotInvited)
+
+	env.attendance.statuses["carmencita"] = statusConfirmed
+	env.events.err = errEventNotFound
+	w = env.do(t, request{method: "GET", path: path, token: "ana"})
+	assertError(t, w, http.StatusNotFound, codeEventNotFound)
+}

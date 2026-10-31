@@ -52,6 +52,30 @@ func nextStatus(current Status, a action) (Status, error) {
 	}
 }
 
+// AttendanceSummary counts the answers of the catalog guests (spec 003, data-model.md).
+type AttendanceSummary struct {
+	Invited   int `json:"invited"`
+	Confirmed int `json:"confirmed"`
+	Declined  int `json:"declined"`
+	Pending   int `json:"pending"`
+}
+
+// summarizeAttendance counts only guests in the catalog: an answer left by a guest the
+// organizer removed no longer counts, so confirmed + declined + pending is always invited.
+func summarizeAttendance(catalog Catalog, statuses map[string]Status) AttendanceSummary {
+	s := AttendanceSummary{Invited: catalog.Len()}
+	for _, g := range catalog.Sorted() {
+		switch statuses[g.ID] {
+		case statusConfirmed:
+			s.Confirmed++
+		case statusDeclined:
+			s.Declined++
+		}
+	}
+	s.Pending = s.Invited - s.Confirmed - s.Declined
+	return s
+}
+
 type attendanceRecord struct {
 	Status Status `firestore:"status"`
 }
