@@ -113,6 +113,7 @@ type testEnv struct {
 	attempts   *fakeAttempts
 	links      fakeLinks
 	transport  *fakeTransport
+	itinerary  *fakeItinerary
 }
 
 // Accounts used by the tests: their token is the account name.
@@ -147,8 +148,9 @@ func newTestEnv(t *testing.T) *testEnv {
 		attempts:   &fakeAttempts{states: map[string]attemptState{}, now: now},
 		links:      fakeLinks{},
 		transport:  &fakeTransport{},
+		itinerary:  &fakeItinerary{},
 	}
-	srv := NewServer(env.guests, env.events, env.attendance, env.attempts, testAccounts, env.links, env.transport)
+	srv := NewServer(env.guests, env.events, env.attendance, env.attempts, testAccounts, env.links, env.transport, env.itinerary)
 	env.handler = srv.routes()
 	return env
 }

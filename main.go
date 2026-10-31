@@ -66,7 +66,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           NewServer(guests, events, NewAttendanceStore(client, cfg.EventID), NewAttemptStore(client), verifier, NewLinkStore(client, cfg.EventID), NewTransportStore(client, cfg.EventID)).routes(),
+		Handler:           NewServer(guests, events, NewAttendanceStore(client, cfg.EventID), NewAttemptStore(client), verifier, NewLinkStore(client, cfg.EventID), NewTransportStore(client, cfg.EventID), NewItineraryStore(client, cfg.EventID)).routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

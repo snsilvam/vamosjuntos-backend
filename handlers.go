@@ -53,12 +53,13 @@ type server struct {
 	verifier   tokenVerifier
 	links      linkStore
 	transport  transportStore
+	itinerary  itineraryStore
 	// now is the clock of the countdown (spec 004); tests replace it with a fixed date.
 	now func() time.Time
 }
 
 // NewServer wires the HTTP handlers with their dependencies.
-func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRecorder, attempts attemptLimiter, verifier tokenVerifier, links linkStore, transport transportStore) *server {
+func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRecorder, attempts attemptLimiter, verifier tokenVerifier, links linkStore, transport transportStore, itinerary itineraryStore) *server {
 	return &server{
 		guests:     guests,
 		events:     events,
@@ -67,6 +68,7 @@ func NewServer(guests guestCatalog, events eventGetter, attendance attendanceRec
 		verifier:   verifier,
 		links:      links,
 		transport:  transport,
+		itinerary:  itinerary,
 		now:        time.Now,
 	}
 }
@@ -87,6 +89,10 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/transport/vehicles/{vehicleID}/passengers", s.requireGuest(s.handleReserveSeat))
 	mux.HandleFunc("DELETE /api/transport/vehicles/{vehicleID}/passengers/{guestID}", s.requireGuest(s.handleReleaseSeat))
 	mux.HandleFunc("GET /api/countdown", s.requireGuest(s.handleCountdown))
+	mux.HandleFunc("GET /api/itinerary", s.requireGuest(s.handleItinerary))
+	mux.HandleFunc("POST /api/itinerary/activities", s.requireGuest(s.handleCreateActivity))
+	mux.HandleFunc("PUT /api/itinerary/activities/{activityID}", s.requireGuest(s.handleUpdateActivity))
+	mux.HandleFunc("DELETE /api/itinerary/activities/{activityID}", s.requireGuest(s.handleDeleteActivity))
 	return noStore(mux)
 }
 

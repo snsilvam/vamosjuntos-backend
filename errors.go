@@ -35,6 +35,12 @@ const (
 	codeGuestNotConfirmed    = "guest_not_confirmed"
 	codeVehicleNotFound      = "vehicle_not_found"
 	codePassengerNotFound    = "passenger_not_found"
+
+	// Itinerary module (spec 006).
+	codeInvalidActivity    = "invalid_activity"
+	codeActivityOutOfRange = "activity_out_of_range"
+	codeActivityTimeOrder  = "activity_time_order"
+	codeActivityNotFound   = "activity_not_found"
 )
 
 type errorBody struct {
