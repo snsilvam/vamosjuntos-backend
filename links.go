@@ -27,8 +27,14 @@ func NewLinkStore(client *firestore.Client, eventID string) *LinkStore {
 	return &LinkStore{client: client, eventID: eventID}
 }
 
+// linksCollection is events/{EVENT_ID}/links. AttendanceStore reads it too: only a guest without
+// a link can be confirmed by someone else (spec 009).
+func linksCollection(client *firestore.Client, eventID string) *firestore.CollectionRef {
+	return client.Collection("events").Doc(eventID).Collection("links")
+}
+
 func (s *LinkStore) collection() *firestore.CollectionRef {
-	return s.client.Collection("events").Doc(s.eventID).Collection("links")
+	return linksCollection(s.client, s.eventID)
 }
 
 func (s *LinkStore) byAccount(uid string) firestore.Query {
@@ -45,6 +51,20 @@ func (s *LinkStore) GuestOf(ctx context.Context, uid string) (string, bool, erro
 		return "", false, nil
 	}
 	return docs[0].Ref.ID, true, nil
+}
+
+// Linked returns the ids of the guests that have a linked account. It reads only document ids:
+// the accounts' uid and email are not needed.
+func (s *LinkStore) Linked(ctx context.Context) (map[string]bool, error) {
+	docs, err := s.collection().Select().Documents(ctx).GetAll()
+	if err != nil {
+		return nil, fmt.Errorf("list links: %w", err)
+	}
+	out := make(map[string]bool, len(docs))
+	for _, d := range docs {
+		out[d.Ref.ID] = true
+	}
+	return out, nil
 }
 
 // Link links the account uid to guestID (FR-004, FR-005). Linking the same pair again does

@@ -24,7 +24,7 @@ type action int
 const (
 	actionConfirm      action = iota // the guest confirms (FR-006, or after re-entry FR-011)
 	actionDecline                    // the guest says they will not attend (FR-007)
-	actionConfirmOther               // another guest confirms them with their code (FR-014)
+	actionConfirmOther               // another guest confirms them, without their code (spec 009)
 )
 
 var (
@@ -50,6 +50,21 @@ func nextStatus(current Status, a action) (Status, error) {
 	default:
 		return current, fmt.Errorf("unknown action %d", a)
 	}
+}
+
+// confirmOther decides whether another guest may confirm a guest whose answer is current and
+// who has (linked) or not a linked account (spec 009, data-model.md). The answer is checked
+// first: a guest with an account has usually answered already, and "already responded" is the
+// clearer message then.
+func confirmOther(current Status, linked bool) (Status, error) {
+	next, err := nextStatus(current, actionConfirmOther)
+	if err != nil {
+		return current, err
+	}
+	if linked {
+		return current, errGuestLinked
+	}
+	return next, nil
 }
 
 // AttendanceSummary counts the answers of the catalog guests (spec 003, data-model.md).
@@ -118,21 +133,10 @@ func (s *AttendanceStore) Respond(ctx context.Context, guestID string, a action,
 	ref := s.collection().Doc(guestID)
 	var result Status
 	err := s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		current := statusPending
-		snap, err := tx.Get(ref)
-		switch {
-		case status.Code(err) == codes.NotFound:
-			// No answer yet: pending.
-		case err != nil:
-			return fmt.Errorf("get attendance: %w", err)
-		default:
-			var r attendanceRecord
-			if err := snap.DataTo(&r); err != nil {
-				return fmt.Errorf("decode attendance: %w", err)
-			}
-			current = r.Status
+		current, err := statusIn(tx, ref)
+		if err != nil {
+			return err
 		}
-
 		next, err := nextStatus(current, a)
 		if err != nil {
 			return err
@@ -151,4 +155,54 @@ func (s *AttendanceStore) Respond(ctx context.Context, guestID string, a action,
 		return "", fmt.Errorf("respond for %s: %w", guestID, err)
 	}
 	return result, nil
+}
+
+// ConfirmOther confirms guestID on behalf of the guest by (spec 009, FR-004). The link of
+// guestID is read in the same transaction: LinkStore.Link reads and creates that document in its
+// own transaction, so Firestore orders the two and a guest who just linked an account is never
+// confirmed by someone else.
+func (s *AttendanceStore) ConfirmOther(ctx context.Context, guestID, by string) error {
+	linkRef := linksCollection(s.client, s.eventID).Doc(guestID)
+	ref := s.collection().Doc(guestID)
+	err := s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		_, err := tx.Get(linkRef)
+		if err != nil && status.Code(err) != codes.NotFound {
+			return fmt.Errorf("get link: %w", err)
+		}
+		linked := err == nil
+
+		current, err := statusIn(tx, ref)
+		if err != nil {
+			return err
+		}
+		next, err := confirmOther(current, linked)
+		if err != nil {
+			return err
+		}
+		return tx.Set(ref, map[string]any{
+			"status":      string(next),
+			"respondedAt": firestore.ServerTimestamp,
+			"respondedBy": by,
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("confirm %s: %w", guestID, err)
+	}
+	return nil
+}
+
+// statusIn reads the answer stored in ref inside tx. A guest without a document is pending.
+func statusIn(tx *firestore.Transaction, ref *firestore.DocumentRef) (Status, error) {
+	snap, err := tx.Get(ref)
+	switch {
+	case status.Code(err) == codes.NotFound:
+		return statusPending, nil
+	case err != nil:
+		return "", fmt.Errorf("get attendance: %w", err)
+	}
+	var r attendanceRecord
+	if err := snap.DataTo(&r); err != nil {
+		return "", fmt.Errorf("decode attendance: %w", err)
+	}
+	return r.Status, nil
 }

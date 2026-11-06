@@ -37,6 +37,35 @@ func TestNextStatus(t *testing.T) {
 	}
 }
 
+// Spec 009: only a pending guest without a linked account can be confirmed by someone else.
+func TestConfirmOtherRule(t *testing.T) {
+	tests := []struct {
+		name    string
+		current Status
+		linked  bool
+		want    Status
+		wantErr error
+	}{
+		{"pending without account", statusPending, false, statusConfirmed, nil},
+		{"pending with account", statusPending, true, statusPending, errGuestLinked},
+		{"confirmed without account", statusConfirmed, false, statusConfirmed, errAlreadyResponded},
+		{"confirmed with account", statusConfirmed, true, statusConfirmed, errAlreadyResponded},
+		{"declined without account", statusDeclined, false, statusDeclined, errAlreadyResponded},
+		{"declined with account", statusDeclined, true, statusDeclined, errAlreadyResponded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := confirmOther(tt.current, tt.linked)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("status = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // testCatalog returns a catalog of n guests with ids g01, g02, ...
 func testCatalog(t *testing.T, n int) Catalog {
 	t.Helper()

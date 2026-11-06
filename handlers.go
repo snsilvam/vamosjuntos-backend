@@ -24,6 +24,7 @@ type eventGetter interface {
 type attendanceRecorder interface {
 	Statuses(ctx context.Context) (map[string]Status, error)
 	Respond(ctx context.Context, guestID string, a action, respondedBy string) (Status, error)
+	ConfirmOther(ctx context.Context, guestID, by string) error
 }
 
 type attemptLimiter interface {
@@ -38,6 +39,7 @@ type tokenVerifier interface {
 type linkStore interface {
 	GuestOf(ctx context.Context, uid string) (string, bool, error)
 	Link(ctx context.Context, uid, email, guestID string) error
+	Linked(ctx context.Context) (map[string]bool, error)
 }
 
 type transportStore interface {
@@ -81,6 +83,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/onboarding/guests", s.requireAccount(s.handleGuests))
 	mux.HandleFunc("POST /api/onboarding/link", s.requireAccount(s.handleLink))
 	mux.HandleFunc("POST /api/onboarding/respond", s.requireAccount(s.handleRespond))
+	mux.HandleFunc("GET /api/guests/confirmable", s.requireGuest(s.handleConfirmable))
 	mux.HandleFunc("POST /api/guests/{guestID}/confirmation", s.requireGuest(s.handleConfirmOther))
 	mux.HandleFunc("GET /api/event", s.requireGuest(s.handleEvent))
 	// Transport module (spec 005).
@@ -319,16 +322,40 @@ func (s *server) handleRespond(w http.ResponseWriter, r *http.Request, account A
 	writeJSON(w, http.StatusOK, statusResponse{Status: next, Guest: &guest})
 }
 
-// handleConfirmOther confirms another pending guest with that guest's code (FR-013). It links
-// no account and does not change the caller's session. A wrong code is a 400, not a 401, so the
-// frontend does not treat it as a lost session.
-func (s *server) handleConfirmOther(w http.ResponseWriter, r *http.Request, account Account, me Guest) {
-	var req struct {
-		Code string `json:"code"`
-	}
-	if !decodeJSON(w, r, &req) {
+// handleConfirmable lists the guests another guest may confirm: pending and without a linked
+// account, in catalog order (spec 009, FR-002). Guests with an account answer for themselves.
+func (s *server) handleConfirmable(w http.ResponseWriter, r *http.Request, _ Account, _ Guest) {
+	if _, ok := s.loadEvent(w, r); !ok {
 		return
 	}
+	catalog, ok := s.loadCatalog(w, r)
+	if !ok {
+		return
+	}
+	statuses, err := s.attendance.Statuses(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	linked, err := s.links.Linked(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	confirmable := []Guest{}
+	for _, g := range catalog.Sorted() {
+		if statuses[g.ID] == statusPending && !linked[g.ID] {
+			confirmable = append(confirmable, g)
+		}
+	}
+	writeJSON(w, http.StatusOK, guestsResponse{Guests: confirmable})
+}
+
+// handleConfirmOther confirms another guest without their code (spec 009, FR-001, FR-004): only
+// a pending guest without a linked account. It links no account and does not change the
+// caller's session. The body is ignored, so the previous app, which still sends the code, keeps
+// working; no code is compared, so nothing counts toward the attempt limit (FR-007).
+func (s *server) handleConfirmOther(w http.ResponseWriter, r *http.Request, _ Account, me Guest) {
 	if _, ok := s.loadEvent(w, r); !ok {
 		return
 	}
@@ -341,20 +368,15 @@ func (s *server) handleConfirmOther(w http.ResponseWriter, r *http.Request, acco
 		writeError(w, http.StatusNotFound, codeGuestNotFound)
 		return
 	}
-	match := catalog.Matches(target.ID, req.Code)
-	if !s.checkCode(r.Context(), w, account.UID, match) {
-		return
-	}
-	if !match {
-		writeError(w, http.StatusBadRequest, codeInvalidCode)
-		return
-	}
-	_, err := s.attendance.Respond(r.Context(), target.ID, actionConfirmOther, me.ID)
-	if errors.Is(err, errAlreadyResponded) {
+	err := s.attendance.ConfirmOther(r.Context(), target.ID, me.ID)
+	switch {
+	case errors.Is(err, errAlreadyResponded):
 		writeError(w, http.StatusConflict, codeAlreadyResponded)
 		return
-	}
-	if err != nil {
+	case errors.Is(err, errGuestLinked):
+		writeError(w, http.StatusConflict, codeGuestAlreadyLinked)
+		return
+	case err != nil:
 		writeInternalError(w, err)
 		return
 	}

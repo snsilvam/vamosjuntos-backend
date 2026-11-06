@@ -32,6 +32,8 @@ func (f *fakeEvents) Get(context.Context) (Event, error) { return f.event, f.err
 type fakeAttendance struct {
 	statuses    map[string]Status
 	respondedBy map[string]string
+	// links is the same map the server uses, so ConfirmOther sees who has an account.
+	links fakeLinks
 }
 
 func (f *fakeAttendance) Statuses(context.Context) (map[string]Status, error) {
@@ -52,6 +54,17 @@ func (f *fakeAttendance) Respond(_ context.Context, guestID string, a action, re
 		f.respondedBy[guestID] = respondedBy
 	}
 	return next, nil
+}
+
+func (f *fakeAttendance) ConfirmOther(_ context.Context, guestID, by string) error {
+	_, linked := f.links[guestID]
+	next, err := confirmOther(f.statuses[guestID], linked)
+	if err != nil {
+		return err
+	}
+	f.statuses[guestID] = next
+	f.respondedBy[guestID] = by
+	return nil
 }
 
 type fakeAttempts struct {
@@ -105,6 +118,14 @@ func (f fakeLinks) Link(ctx context.Context, uid, _ string, guestID string) erro
 	return nil
 }
 
+func (f fakeLinks) Linked(context.Context) (map[string]bool, error) {
+	out := make(map[string]bool, len(f))
+	for guestID := range f {
+		out[guestID] = true
+	}
+	return out, nil
+}
+
 type testEnv struct {
 	handler    http.Handler
 	guests     *fakeGuests
@@ -135,6 +156,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, colombia)
+	links := fakeLinks{}
 	env := &testEnv{
 		guests: &fakeGuests{catalog: catalog},
 		events: &fakeEvents{event: Event{
@@ -145,9 +167,9 @@ func newTestEnv(t *testing.T) *testEnv {
 			DeparturePlaces: []string{"Bogotá", "Tocancipá"},
 			Capacity:        25,
 		}},
-		attendance: &fakeAttendance{statuses: map[string]Status{}, respondedBy: map[string]string{}},
+		attendance: &fakeAttendance{statuses: map[string]Status{}, respondedBy: map[string]string{}, links: links},
 		attempts:   &fakeAttempts{states: map[string]attemptState{}, now: now},
-		links:      fakeLinks{},
+		links:      links,
 		transport:  &fakeTransport{},
 		itinerary:  &fakeItinerary{},
 		purchases:  &fakePurchases{},
@@ -379,23 +401,33 @@ func TestRespond(t *testing.T) {
 // --- US3: acceso protegido ---
 
 func TestProtectedRoutes(t *testing.T) {
-	env := newTestEnv(t)
-	path := "/api/guests/liam/confirmation"
-	body := map[string]string{"code": "prueba02"}
+	routes := []request{
+		{method: "POST", path: "/api/guests/liam/confirmation"},
+		{method: "GET", path: "/api/guests/confirmable"},
+	}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			env := newTestEnv(t)
+			as := func(token string) request {
+				r := route
+				r.token = token
+				return r
+			}
 
-	w := env.do(t, request{method: "POST", path: path, body: body})
-	assertError(t, w, http.StatusUnauthorized, codeUnauthenticated)
+			assertError(t, env.do(t, as("")), http.StatusUnauthorized, codeUnauthenticated)
+			assertError(t, env.do(t, as("ana")), http.StatusForbidden, codeNotLinked)
 
-	w = env.do(t, request{method: "POST", path: path, token: "ana", body: body})
-	assertError(t, w, http.StatusForbidden, codeNotLinked)
+			env.links["carmencita"] = "uid-ana" // linked but still pending
+			assertError(t, env.do(t, as("ana")), http.StatusForbidden, codeNotInvited)
 
-	env.links["carmencita"] = "uid-ana" // linked but still pending
-	w = env.do(t, request{method: "POST", path: path, token: "ana", body: body})
-	assertError(t, w, http.StatusForbidden, codeNotInvited)
+			env.links["nadie"] = "uid-beto" // linked to a guest removed from the catalog
+			assertError(t, env.do(t, as("beto")), http.StatusForbidden, codeNotInvited)
 
-	env.links["nadie"] = "uid-beto" // linked to a guest removed from the catalog
-	w = env.do(t, request{method: "POST", path: path, token: "beto", body: body})
-	assertError(t, w, http.StatusForbidden, codeNotInvited)
+			if env.attendance.statuses["liam"] != statusPending {
+				t.Fatalf("a rejected request changed attendance: %v", env.attendance.statuses)
+			}
+		})
+	}
 }
 
 // --- US4: vincularse solo con el código ---
@@ -452,23 +484,53 @@ func TestDeclinedGuestCanConfirmLater(t *testing.T) {
 	}
 }
 
-// --- US6: confirmar a otro invitado ---
+// --- Spec 009: confirmar a otro invitado sin su código ---
 
-func TestConfirmOther(t *testing.T) {
-	env := newTestEnv(t)
+// confirmedAna links the account "ana" to Carmencita, already confirmed: she confirms others.
+func confirmedAna(env *testEnv) {
 	env.links["carmencita"] = "uid-ana"
 	env.attendance.statuses["carmencita"] = statusConfirmed
+}
+
+func confirmableIDs(t *testing.T, env *testEnv, token string) []string {
+	t.Helper()
+	w := env.do(t, request{method: "GET", path: "/api/guests/confirmable", token: token})
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/guests/confirmable: status = %d, body %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "prueba") || strings.Contains(w.Body.String(), "uid-") {
+		t.Fatalf("response leaks codes or accounts: %s", w.Body.String())
+	}
+	var got guestsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(got.Guests))
+	for i, g := range got.Guests {
+		ids[i] = g.ID
+	}
+	return ids
+}
+
+// US1: confirming another guest needs no code (FR-001, FR-005, FR-007).
+func TestConfirmOther(t *testing.T) {
+	env := newTestEnv(t)
+	confirmedAna(env)
 	path := "/api/guests/liam/confirmation"
 
-	w := env.do(t, request{method: "POST", path: path, token: "ana", body: map[string]string{"code": "prueba01"}})
-	assertError(t, w, http.StatusBadRequest, codeInvalidCode)
-
-	w = env.do(t, request{method: "POST", path: "/api/guests/nadie/confirmation", token: "ana", body: map[string]string{"code": "prueba02"}})
+	w := env.do(t, request{method: "POST", path: "/api/guests/nadie/confirmation", token: "ana"})
 	assertError(t, w, http.StatusNotFound, codeGuestNotFound)
 
-	w = env.do(t, request{method: "POST", path: path, token: "ana", body: map[string]string{"code": "prueba02"}})
+	w = env.do(t, request{method: "POST", path: path, token: "ana"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	var got statusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != statusConfirmed || got.Guest == nil || got.Guest.ID != "liam" {
+		t.Fatalf("response = %+v, want Liam confirmed", got)
 	}
 	if env.attendance.statuses["liam"] != statusConfirmed || env.attendance.respondedBy["liam"] != "carmencita" {
 		t.Fatalf("attendance = %v, respondedBy = %v", env.attendance.statuses, env.attendance.respondedBy)
@@ -476,8 +538,73 @@ func TestConfirmOther(t *testing.T) {
 	if len(env.links) != 1 {
 		t.Fatalf("confirming another guest created a link: %v", env.links)
 	}
+	if len(env.attempts.states) != 0 {
+		t.Fatalf("confirming another guest counted attempts: %v", env.attempts.states)
+	}
+	if me := env.me(t, "ana"); me.Status != meConfirmed || me.Guest.ID != "carmencita" {
+		t.Fatalf("the caller's account changed: %+v", me)
+	}
 
-	w = env.do(t, request{method: "POST", path: path, token: "ana", body: map[string]string{"code": "prueba02"}})
+	w = env.do(t, request{method: "POST", path: path, token: "ana"})
+	assertError(t, w, http.StatusConflict, codeAlreadyResponded)
+}
+
+// The previous app still sends the guest's code: it is ignored (research R4).
+func TestConfirmOtherIgnoresBody(t *testing.T) {
+	env := newTestEnv(t)
+	confirmedAna(env)
+
+	w := env.do(t, request{method: "POST", path: "/api/guests/liam/confirmation", token: "ana", body: map[string]string{"code": "cualquiera"}})
+	if w.Code != http.StatusOK || env.attendance.statuses["liam"] != statusConfirmed {
+		t.Fatalf("status = %d, attendance = %v", w.Code, env.attendance.statuses)
+	}
+	if len(env.attempts.states) != 0 {
+		t.Fatalf("a code in the body counted attempts: %v", env.attempts.states)
+	}
+}
+
+// US1 and US2: the list holds pending guests without an account, in order (FR-002).
+func TestConfirmableGuests(t *testing.T) {
+	env := newTestEnv(t)
+	confirmedAna(env)
+
+	if got := confirmableIDs(t, env, "ana"); strings.Join(got, ",") != "liam,papa-de-lore" {
+		t.Fatalf("confirmable = %v, want liam and papa-de-lore", got)
+	}
+
+	env.links["papa-de-lore"] = "uid-beto" // linked, has not answered yet
+	if got := confirmableIDs(t, env, "ana"); strings.Join(got, ",") != "liam" {
+		t.Fatalf("confirmable = %v, want only liam", got)
+	}
+
+	env.attendance.statuses["liam"] = statusDeclined
+	if got := confirmableIDs(t, env, "ana"); len(got) != 0 {
+		t.Fatalf("confirmable = %v, want none", got)
+	}
+
+	env.events.err = errEventNotFound
+	w := env.do(t, request{method: "GET", path: "/api/guests/confirmable", token: "ana"})
+	assertError(t, w, http.StatusNotFound, codeEventNotFound)
+}
+
+// US2: a guest with a linked account answers for themselves (FR-004).
+func TestConfirmOtherRejectsGuestWithAccount(t *testing.T) {
+	env := newTestEnv(t)
+	confirmedAna(env)
+	env.links["liam"] = "uid-beto" // linked, has not answered yet
+
+	w := env.do(t, request{method: "POST", path: "/api/guests/liam/confirmation", token: "ana"})
+	assertError(t, w, http.StatusConflict, codeGuestAlreadyLinked)
+	if env.attendance.statuses["liam"] != statusPending {
+		t.Fatalf("attendance = %v, want Liam still pending", env.attendance.statuses)
+	}
+	if me := env.me(t, "beto"); me.Status != mePending {
+		t.Fatalf("me = %+v, want Liam to answer himself", me)
+	}
+
+	// Already answered wins over the link: it is the clearer message.
+	env.attendance.statuses["liam"] = statusConfirmed
+	w = env.do(t, request{method: "POST", path: "/api/guests/liam/confirmation", token: "ana"})
 	assertError(t, w, http.StatusConflict, codeAlreadyResponded)
 }
 
@@ -576,7 +703,7 @@ func TestEventCountsChangeAfterConfirmingOther(t *testing.T) {
 	env.links["carmencita"] = "uid-ana"
 	env.attendance.statuses["carmencita"] = statusConfirmed
 
-	w := env.do(t, request{method: "POST", path: "/api/guests/liam/confirmation", token: "ana", body: map[string]string{"code": "prueba02"}})
+	w := env.do(t, request{method: "POST", path: "/api/guests/liam/confirmation", token: "ana"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("confirm other: status = %d, body %s", w.Code, w.Body.String())
 	}
